@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+
+
+## Cntrolador PID 
+
+"""
+Um nó ROS2 usado para controlar um robô de tração diferencial com câmera,
+para que ele siga a linha em uma pista no estilo Robotrace.
+Você pode alterar os parâmetros conforme necessário.
+"""
+__author__ = "Fabio Romero de Souza Junior"
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from std_srvs.srv import Empty
+
+import numpy as np
+import cv2
+import cv_bridge
+
+from std_msgs.msg import Float32
+
+# Cria uma ponte entre ROS e OpenCV
+bridge = cv_bridge.CvBridge()
+
+# Parâmetros definidos pelo usuário (atualize conforme necessário)
+# Tamanho mínimo para um contorno ser considerado
+MIN_AREA = 500
+
+# Tamanho mínimo para um contorno ser considerado parte da pista
+MIN_AREA_TRACK = 5000
+
+# Se a linha for completamente perdida, o erro será compensado por:
+LOSS_FACTOR = 1.2
+
+# Envia mensagens a cada TIMER_PERIOD segundos
+TIMER_PERIOD = 0.06
+
+# Ao se aproximar do fim da pista, move por aproximadamente FINALIZATION_PERIOD segundos a mais
+FINALIZATION_PERIOD = 4
+
+# Erro máximo para o qual o robô ainda é considerado em linha reta
+MAX_ERROR = 30
+
+LINEAR_SPEED = 0.1875
+saturacao = 1.0  # PADRÃO = 1.0
+
+KP = 0.018
+KI = 0.0000008
+KD = 0.000000035
+
+previous_error = 0.0
+integral = 0.0
+
+
+def pid_control(error):
+    global previous_error, integral
+
+    # Calcular o termo integral (erro acumulado)
+    integral += error
+
+    # Calcular o termo derivativo (variação do erro)
+    derivative = error - previous_error
+
+    # PID
+    angular_z = -(KP * error + KI * integral + KD * derivative)
+
+    # Atualiza o erro anterior
+    previous_error = error
+
+    return angular_z
+
+
+# Valores BGR para filtrar apenas a faixa de cor selecionada
+lower_bgr_values = np.array([31, 42, 53])
+upper_bgr_values = np.array([255, 255, 255])
+
+
+def crop_size(height, width):
+    # Define a área usada para detectar a linha (recorte da imagem)
+    return (1 * height // 3, height, 0, width)
+
+
+# Variáveis globais (valores iniciais)
+image_input = 0
+error = 0
+just_seen_line = False
+just_seen_right_mark = False
+should_move = False
+right_mark_count = 0
+finalization_countdown = None
+
+
+def start_follower_callback(request, response):
+    """
+    Inicia o robô.
+    Em outras palavras, permite que ele volte a se mover.
+    """
+    global should_move
+    global right_mark_count
+    global finalization_countdown
+    should_move = True
+    right_mark_count = 0
+    finalization_countdown = None
+    return response
+
+
+def stop_follower_callback(request, response):
+    """
+    Para o robô.
+    """
+    global should_move
+    global finalization_countdown
+    should_move = False
+    finalization_countdown = None
+    return response
+
+
+def image_callback(msg):
+    """
+    Função chamada sempre que uma nova mensagem de Image chega.
+    Atualiza a variável global 'image_input'.
+    """
+    global image_input
+    image_input = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+
+
+def get_contour_data(mask, out):
+    """
+    Retorna o centróide do maior contorno na imagem binária 'mask' (a linha)
+    e retorna o lado em que está o contorno menor (a marca da pista)
+    (se existirem esses contornos), além de desenhar todos os contornos em 'out'.
+    """
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    mark = {}
+    line = {}
+
+    for contour in contours:
+        M = cv2.moments(contour)
+
+        if M["m00"] > MIN_AREA:
+            if M["m00"] > MIN_AREA_TRACK:
+                # Contorno faz parte da pista (linha)
+                line["x"] = crop_w_start + int(M["m10"] / M["m00"])
+                line["y"] = int(M["m01"] / M["m00"])
+
+                # Desenha o contorno em azul claro
+                cv2.drawContours(out, contour, -1, (255, 255, 0), 1)
+                cv2.putText(
+                    out,
+                    str(M["m00"]),
+                    (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])),
+                    cv2.FONT_HERSHEY_PLAIN,
+                    2,
+                    (255, 255, 0),
+                    2,
+                )
+            else:
+                # Contorno é uma marca da pista
+                if (not mark) or (mark["y"] > int(M["m01"] / M["m00"])):
+                    # Se houver mais de uma marca, considera apenas a mais próxima do robô
+                    mark["y"] = int(M["m01"] / M["m00"])
+                    mark["x"] = crop_w_start + int(M["m10"] / M["m00"])
+
+                    # Desenha o contorno em rosa
+                    cv2.drawContours(out, contour, -1, (255, 0, 255), 1)
+                    cv2.putText(
+                        out,
+                        str(M["m00"]),
+                        (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])),
+                        cv2.FONT_HERSHEY_PLAIN,
+                        2,
+                        (255, 0, 255),
+                        2,
+                    )
+
+    if mark and line:
+        # Se ambos os contornos existirem
+        if mark["x"] > line["x"]:
+            mark_side = "right"
+        else:
+            mark_side = "left"
+    else:
+        mark_side = None
+
+    return (line, mark_side)
+
+
+def timer_callback():
+    """
+    Função chamada quando o timer dispara.
+    Com base na imagem 'image_input', determina a velocidade do robô
+    para que ele consiga seguir o contorno.
+    """
+    global error
+    global image_input
+    global just_seen_line
+    global just_seen_right_mark
+    global should_move
+    global right_mark_count
+    global finalization_countdown
+
+    # Aguarda a primeira imagem ser recebida
+    if type(image_input) != np.ndarray:
+        return
+
+    height, width, _ = image_input.shape
+    image = image_input.copy()
+
+    global crop_w_start
+    crop_h_start, crop_h_stop, crop_w_start, crop_w_stop = crop_size(height, width)
+
+    # Obtém a parte inferior da imagem (recorte)
+    crop = image[crop_h_start:crop_h_stop, crop_w_start:crop_w_stop]
+
+    # Gera uma imagem binária onde valores não-zero representam a linha
+    mask = cv2.inRange(crop, lower_bgr_values, upper_bgr_values)
+
+    # Obtém o centróide do maior contorno e desenha detalhes no recorte do output
+    output = image
+    line, mark_side = get_contour_data(
+        mask, output[crop_h_start:crop_h_stop, crop_w_start:crop_w_stop]
+    )
+
+    message = Twist()
+    message.linear.x = LINEAR_SPEED
+
+    if line:
+        # Se existe linha na imagem
+        x = line["x"]
+
+        # Erro: diferença entre o centro da imagem e o centro da linha
+        error = x - width // 2
+
+        just_seen_line = True
+
+        # Desenha o centróide da linha
+        cv2.circle(output, (line["x"], crop_h_start + line["y"]), 5, (0, 255, 0), 7)
+    else:
+        fabio = 0
+
+    # Determina a velocidade angular para centralizar a linha na câmera
+    error_pid = pid_control(error)
+
+    # Aplica saturação
+    if error_pid > saturacao:
+        message.angular.z = saturacao
+    elif error_pid < -saturacao:
+        message.angular.z = -saturacao
+    else:
+        message.angular.z = error_pid
+
+    # Mantém o comportamento original: sobrescreve com o valor sem saturação
+    message.angular.z = error_pid
+
+    publica_error(error)
+    publica_acao(message.angular.z)
+
+    # Desenha as bordas do recorte
+    cv2.rectangle(
+        output, (crop_w_start, crop_h_start), (crop_w_stop, crop_h_stop), (0, 0, 255), 2
+    )
+
+    # Mostra a imagem de saída
+    cv2.imshow("output", output)
+    cv2.waitKey(5)
+
+    # Verifica contagem regressiva de finalização
+    if finalization_countdown != None:
+        if finalization_countdown > 0:
+            finalization_countdown -= 1
+        elif finalization_countdown == 0:
+            should_move = False
+
+    # Publica a mensagem em 'cmd_vel'
+    if should_move:
+        publisher.publish(message)
+    else:
+        empty_message = Twist()
+        publisher.publish(empty_message)
+
+
+def publica_error(err):
+    # Publica o valor do erro
+    error_msg = Float32()
+    error_msg.data = float(err)
+    error_publisher.publish(error_msg)
+
+
+def publica_acao(acao):
+    # Publica o valor da ação (velocidade angular)
+    acao_msg = Float32()
+    acao_msg.data = float(acao)
+    action_publisher.publish(acao_msg)
+
+
+def main():
+    rclpy.init()
+    global node
+    node = Node("follower")
+
+    global publisher
+    global error_publisher
+    global action_publisher
+
+    publisher = node.create_publisher(
+        Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
+    )
+    subscription = node.create_subscription(
+        Image, "camera/image_raw", image_callback, rclpy.qos.qos_profile_sensor_data
+    )
+
+    error_publisher = node.create_publisher(Float32, "error_value", 1)
+    action_publisher = node.create_publisher(Float32, "action_value", 1)
+
+    timer = node.create_timer(TIMER_PERIOD, timer_callback)
+
+    start_service = node.create_service(Empty, "start_follower", start_follower_callback)
+    stop_service = node.create_service(Empty, "stop_follower", stop_follower_callback)
+
+    rclpy.spin(node)
+
+
+try:
+    main()
+except (KeyboardInterrupt, rclpy.exceptions.ROSInterruptException):
+    empty_message = Twist()
+    publisher.publish(empty_message)
+
+    node.destroy_node()
+    rclpy.shutdown()
+    exit()
