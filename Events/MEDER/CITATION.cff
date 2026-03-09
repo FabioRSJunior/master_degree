@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "Line-Following Control with PID and Deep Reinforcement Learning in Simulation"
+message: "If you use this repository, please cite both the software and the associated article."
+type: software
+
+authors:
+  - family-names: "Souza Junior"
+    given-names: "Fabio Romero de"
+
+repository-code: "https://github.com/FabioRSJunior/master_degree/tree/main/Events/MEDER"
+url: "https://github.com/FabioRSJunior/master_degree/tree/main/Events/MEDER"
+orcid: "https://orcid.org/0009-0006-6571-9552"
+license: "MIT"
+version: "1.0.0"
+date-released: "2026-03-09"
+
+preferred-citation:
+  type: article
+  title: "Comparative Evaluation of PID and Deep Reinforcement Learning Controllers for Line-Following in a Simulated Mobile Robot"
+  authors:
+    - family-names: "Souza Junior"
+      given-names: "Fabio Romero de"
+  journal: "Symposium on Mechanism Design for Robotics (MEDER 2026)"
+  year: 2026
