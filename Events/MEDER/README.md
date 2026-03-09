@@ -11,9 +11,9 @@ This repository contains the source code, trained models, maps, and experimental
 
 ## Repository structure
 
-- `00_Data_record/`  
+[- `00_Data_record/`  
   Experimental data obtained from the evaluation runs.
-
+](url)
 - `01_RL_training/`  
   Selected trained reinforcement learning models, including actor and critic files when applicable.
 
@@ -33,3 +33,4 @@ If you use this repository, please cite the associated article and the Zenodo re
 ## Zenodo archive
 
 The archived version of this repository associated with the article is available on Zenodo.
+
