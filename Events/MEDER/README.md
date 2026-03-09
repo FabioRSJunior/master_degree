@@ -17,7 +17,7 @@ This repository contains the source code, trained models, maps, and experimental
 - `01_RL_training/`  
   Selected trained reinforcement learning models, including actor and critic files when applicable.
 
-- `02_Controladores/`  
+- `02_Controlaers/`  
   Controller implementations and model-loading architecture used in the experiments.
 
 - `03_Gazebo_ros2/`  
@@ -30,6 +30,7 @@ If you use this repository, please cite the associated article and the Zenodo re
 ## Zenodo archive
 
 The archived version of this repository associated with the article is available on Zenodo.
+
 
 
 
