@@ -23,8 +23,8 @@ This repository contains the source code, trained models, maps, and experimental
 - `03_Gazebo_ros2/`  
   ROS 2/Gazebo interface files required to reproduce the simulation environment.
 
-- `04_maps/`  
-  Maps used in the training and evaluation scenarios described in the article.
+[- `04_maps/`  
+  Maps used in the training and evaluation scenarios described in the article.](url)
 
 ## Citation
 
@@ -33,4 +33,5 @@ If you use this repository, please cite the associated article and the Zenodo re
 ## Zenodo archive
 
 The archived version of this repository associated with the article is available on Zenodo.
+
 
